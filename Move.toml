@@ -1,0 +1,11 @@
+[package]
+name = "axelar"
+version = "0.0.0"
+
+[dependencies]
+MoveStdlib = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/deps/move-stdlib", rev = "main" }
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework", rev = "main" }
+
+[addresses]
+std = "0x1"
+me = "0x0"
