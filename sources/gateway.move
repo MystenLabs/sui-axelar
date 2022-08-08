@@ -1,3 +1,6 @@
+// Copyright (c) 2022, Mysten Labs, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 /// Attempt to write a Gateway module.
 ///
 /// Based on few assumptions:
@@ -6,7 +9,7 @@
 /// - the only way to get destination information is by scanning txs / events;
 ///
 module me::gateway {
-    use sui::id::{Self, ID, VersionedID};
+    use sui::object::{Self, ID, UID};
     use sui::transfer;
     use sui::event;
     use sui::coin::{Self, Coin, TreasuryCap};
@@ -14,12 +17,12 @@ module me::gateway {
 
     /// The Capability to interact with the gate. Only issued once.
     struct GatekeeperCapability has key {
-        id: VersionedID
+        id: UID
     }
 
     /// The Gateway itself. One per each Coin<T>.
     struct Gateway<phantom T> has key {
-        id: VersionedID,
+        id: UID,
         treasury: TreasuryCap<T>,
     }
 
@@ -53,7 +56,7 @@ module me::gateway {
     /// send it to sender.
     fun init(ctx: &mut TxContext) {
         transfer::transfer(GatekeeperCapability {
-            id: tx_context::new_id(ctx),
+            id: object::new(ctx),
         }, tx_context::sender(ctx))
     }
 
@@ -64,15 +67,17 @@ module me::gateway {
     /// GatekeeperCapability which only module creator owns.
     public fun deploy_gate<T: drop>(witness: T, _: &GatekeeperCapability, ctx: &mut TxContext) {
         // id of the deployed gateway
-        let id = tx_context::new_id(ctx);
+        let id = object::new(ctx);
 
         // emit event before variable got moved
-        event::emit(TokenDeployed<T> { id: *id::inner(&id) });
+        event::emit(TokenDeployed<T> { id: *object::uid_as_inner(&id) });
         transfer::share_object(Gateway {
             id,
             treasury: coin::create_currency(witness, ctx)
         })
     }
+
+    // tx gateway::mint_token gatewayId, capId, amount
 
     /// Admin action of minting and sending coin to the receiver on Sui side.
     /// Only callable for existing Gateway<T> by owner of the GatekeeperCapability.
@@ -84,13 +89,15 @@ module me::gateway {
         ctx: &mut TxContext
     ) {
         event::emit(TokenMinted<T> {
-            gateway: *id::id(gate),
+            gateway: object::id(gate),
             amount,
             receiver
         });
 
         transfer::transfer(coin::mint(&mut gate.treasury, amount, ctx), receiver)
     }
+
+    // Sol: 'ETH' -> Sui: '0x0.....::eth_gate::ETH'
 
     // ====== Public accessors =====
 
@@ -108,7 +115,7 @@ module me::gateway {
     ) {
         event::emit(TokenSent<T> {
             sender: tx_context::sender(ctx),
-            gateway: *id::id(gate),
+            gateway: object::id(gate),
             destination_chain,
             destination_address,
             symbol,
@@ -133,7 +140,7 @@ module me::gateway {
 /// the action can be performed only by admin account.
 module me::eth_gate {
     use sui::transfer;
-    use sui::id::{Self, VersionedID};
+    use sui::object::{Self, UID};
     use sui::tx_context::{Self, TxContext};
     use me::gateway::{Self, GatekeeperCapability};
 
@@ -141,7 +148,7 @@ module me::eth_gate {
     /// in module initializer. Contains a witness which is
     /// then used to deploy a new Gateway.
     struct DeployCapability has key {
-        id: VersionedID,
+        id: UID,
         witness: ETH
     }
 
@@ -153,7 +160,7 @@ module me::eth_gate {
     /// Sends a `DeployCapability` to the sender
     fun init(ctx: &mut TxContext) {
         transfer::transfer(DeployCapability {
-            id: tx_context::new_id(ctx),
+            id: object::new(ctx),
             witness: ETH {}
         }, tx_context::sender(ctx))
     }
@@ -169,7 +176,7 @@ module me::eth_gate {
         ctx: &mut TxContext
     ) {
         let DeployCapability { id, witness } = deploy_cap;
-        id::delete(id);
+        object::delete(id);
 
         gateway::deploy_gate(witness, gate_cap, ctx)
     }
