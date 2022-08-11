@@ -6,14 +6,14 @@
 /// This code is based on the following:
 ///
 /// - When message is sent to Sui, it targets an object and not a module;
-/// - To support cross-chain messaging, a Beacon object has to be created;
-/// - Beacon can be either owned or shared but not frozen;
+/// - To support cross-chain messaging, a Channel object has to be created;
+/// - Channel can be either owned or shared but not frozen;
 /// - Module developer on the Sui side will have to implement a system to support messaging;
-/// - Checks for uniqueness of messages should be done through `Beacon`s to avoid big data storage;
+/// - Checks for uniqueness of messages should be done through `Channel`s to avoid big data storage;
 ///
 /// I. Sending messages
 ///
-/// A message is sent through the `send` function, a Beacon is supplied to determine the source -> ID.
+/// A message is sent through the `send` function, a Channel is supplied to determine the source -> ID.
 /// Event is then emitted and Axelar network can operate
 ///
 /// II. Receiving messages
@@ -21,12 +21,12 @@
 /// Message bytes and signatures are passed into `create` function to generate a Message object.
 ///  - Signatures are checked against the known set of validators.
 ///  - Message bytes are parsed to determine: source, destination_chain, payload and target_id
-///  - `target_id` points to a `Beacon` object
+///  - `target_id` points to a `Channel` object
 ///
 /// Once created, `Message` needs to be consumed. And the only way to do it is by calling `consume`
-/// function and pass a correct `Beacon` instance alongside the `Message`.
-///  - Message is checked for uniqueness (for this beacon)
-///  - Message is checked to match the `Beacon`.id
+/// function and pass a correct `Channel` instance alongside the `Message`.
+///  - Message is checked for uniqueness (for this channel)
+///  - Message is checked to match the `Channel`.id
 ///
 module axelar::messenger {
     use sui::object::{Self, UID};
@@ -61,37 +61,37 @@ module axelar::messenger {
     /// Notes:
     ///
     /// - `drop` ability is a requirement to prevent asset-locking inside a
-    /// Beacon (ie someone can lock Coin or something else).
+    /// Channel (ie someone can lock Coin or something else).
     ///
     /// Note to self: what if a one-time-witness was locked here? It falls into
     /// the `drop` + `store` category...
     ///
     /// - It is impossible to remove this object in favor of direct usage of
-    /// the data as `Beacon` also stores all processed messages and provides
+    /// the data as `Channel` also stores all processed messages and provides
     /// uniqueness and guarantees that a single message was processed only once.
     ///
     /// - Does not contain direct link to the state in Sui, as some functions
     /// might not take any specific data (eg allow users to create new objects).
-    /// If specific object on Sui is targeted by this `Beacon`, its reference
+    /// If specific object on Sui is targeted by this `Channel`, its reference
     /// should be implemented using the `data` field.
     ///
-    /// - The funniest and extremely simple implementation would be a `Beacon<ID>`
+    /// - The funniest and extremely simple implementation would be a `Channel<ID>`
     /// since it actually contains the data required to point at the object in Sui.
-    struct Beacon<T: store + drop> has key, store {
+    struct Channel<T: store + drop> has key, store {
         /// Unique ID of the target object which allows message targeting
         /// by comparing against `id_bytes`.
         id: UID,
         /// Messages processed by this object. To make system less
         /// centralized, and spread the storage + io costs accross multiple
-        /// destinations, we can track every `Beacon`'s messages.
+        /// destinations, we can track every `Channel`'s messages.
         messages: VecSet<vector<u8>>,
-        /// Additional field to optionally use as metadata for the Beacon
+        /// Additional field to optionally use as metadata for the Channel
         /// object improving identification and uniqueness of data.
         /// Can store any struct that has `store` ability.
         data: T
     }
 
-    /// Message 'Hot Potato' which can only be consumed if a `Beacon` object
+    /// Message 'Hot Potato' which can only be consumed if a `Channel` object
     /// is supplied. Does not require additional generic field to operate
     /// as linking by `id_bytes` is more than enough.
     struct Message {
@@ -114,17 +114,17 @@ module axelar::messenger {
         payload: vector<u8>,
     }
 
-    /// Access data stored inside a `Beacon`.
-    public fun beacon_data<T: store + drop>(b: &Beacon<T>): &T {
+    /// Access data stored inside a `Channel`.
+    public fun channel_data<T: store + drop>(b: &Channel<T>): &T {
         &b.data
     }
 
-    /// Create new `Beacon<T>` object. Anyone can create their own `Beacon` to target
+    /// Create new `Channel<T>` object. Anyone can create their own `Channel` to target
     /// from the outside and there's no limitation to the data stored inside it.
     ///
-    /// `copy` ability is required to disallow asset locking inside the `Beacon`.
-    public fun create_beacon<T: store + drop>(t: T, ctx: &mut TxContext): Beacon<T> {
-        Beacon {
+    /// `copy` ability is required to disallow asset locking inside the `Channel`.
+    public fun create_channel<T: store + drop>(t: T, ctx: &mut TxContext): Channel<T> {
+        Channel {
             id: object::new(ctx),
             messages: vec_set::empty(),
             data: t
@@ -156,7 +156,7 @@ module axelar::messenger {
     /// by single-owner targets.
     ///
     /// TODO: consider returning a droppable object instead of tuple.
-    public fun consume_message<T: store + drop>(t: &mut Beacon<T>, m: Message): (vector<u8>, vector<u8>, vector<u8>) {
+    public fun consume_message<T: store + drop>(t: &mut Channel<T>, m: Message): (vector<u8>, vector<u8>, vector<u8>) {
         let Message { target_id, source, destination, payload } = m;
 
         // TODO: figure out a way to provide unique identifier for the message (payload? signatures? hash contents?)
@@ -169,7 +169,7 @@ module axelar::messenger {
     /// Send a message to another chain. Supply the event data and the
     /// destination chain.
     public fun send_message<T: store + drop>(
-        t: &mut Beacon<T>,
+        t: &mut Channel<T>,
         destination: vector<u8>,
         destination_address: vector<u8>,
         payload: vector<u8>

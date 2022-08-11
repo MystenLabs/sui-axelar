@@ -7,7 +7,7 @@ module axelar::coin_bridge {
     use sui::object::{Self, UID};
     use sui::transfer;
 
-    use axelar::messenger::{Self, Validators as AxelarValidators, Beacon};
+    use axelar::messenger::{Self, Validators as AxelarValidators, Channel};
 
     /// For when Bridge currency mismatches expected one.
     const EWrongSymbol: u64 = 0;
@@ -16,7 +16,7 @@ module axelar::coin_bridge {
     struct Bridge<phantom T> has key {
         id: UID,
         symbol: vector<u8>,
-        beacon: Beacon<bool>, // meh, just putting bool there
+        channel: Channel<bool>, // meh, just putting bool there
         treasury_cap: TreasuryCap<T>
     }
 
@@ -26,12 +26,12 @@ module axelar::coin_bridge {
             id: object::new(ctx),
             symbol,
             treasury_cap: coin::create_currency(w, ctx),
-            beacon: messenger::create_beacon(true, ctx),
+            channel: messenger::create_channel(true, ctx),
         })
     }
 
     /// Mint a token on the Sui side by supplying correct information from the outside.
-    /// The message has to target Bridge's Beacon, hence there is only one possible target
+    /// The message has to target Bridge's Channel, hence there is only one possible target
     /// for the Bridge.
     public entry fun mint<T>(
         validators: &AxelarValidators,
@@ -43,7 +43,7 @@ module axelar::coin_bridge {
         ctx: &mut TxContext
     ) {
         let message = messenger::create_message(validators, msg_data, signatures);
-        let ( _source, _destination, payload ) = messenger::consume_message(&mut bridge.beacon, message);
+        let ( _source, _destination, payload ) = messenger::consume_message(&mut bridge.channel, message);
         let (receiver, symbol, amount) = parse_msg_payload(payload);
 
         assert!(bridge.symbol == symbol, EWrongSymbol);
@@ -75,7 +75,7 @@ module axelar::coin_bridge {
         );
 
         messenger::send_message(
-            &mut bridge.beacon,
+            &mut bridge.channel,
             destination,
             destination_address,
             payload

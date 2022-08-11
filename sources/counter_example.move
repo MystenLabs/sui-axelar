@@ -38,18 +38,18 @@ module axelar::counter {
 
 /// Example implementation of a messenger service for the
 module axelar::counter_axelar_interface {
-    use axelar::messenger::{Self, Beacon, Validators as AxelarValidators};
+    use axelar::messenger::{Self, Channel, Validators as AxelarValidators};
     use axelar::counter::{Self, Counter};
     use sui::tx_context::{TxContext};
     use sui::object::{Self, ID};
 
-    /// For when `Beacon` is targeting a wrong `Counter`
+    /// For when `Channel` is targeting a wrong `Counter`
     const ETargetMismatch: u64 = 0;
 
-    /// Create a `Beacon` object pointing to a `Counter`. Any `Counter` can be used for that
+    /// Create a `Channel` object pointing to a `Counter`. Any `Counter` can be used for that
     /// and there's no limit to how many objects there are.
-    public fun setup_interface(for: &Counter, ctx: &mut TxContext): Beacon<ID> {
-        messenger::create_beacon(object::id(for), ctx)
+    public fun setup_interface(for: &Counter, ctx: &mut TxContext): Channel<ID> {
+        messenger::create_channel(object::id(for), ctx)
     }
 
     /// Do the magic of message processing using the `messenger` module.
@@ -57,10 +57,10 @@ module axelar::counter_axelar_interface {
     ///
     /// Relaxing the data linking and allowing message creation without its invocation might
     /// lead to command never getting executed. Alternatively, we could store messages in a
-    /// Beacon but that opens up a whole lot of security vulnerabilities related to delays.
+    /// Channel but that opens up a whole lot of security vulnerabilities related to delays.
     public entry fun process_msg(
         validators: &AxelarValidators,
-        beacon: &mut Beacon<ID>,
+        channel: &mut Channel<ID>,
         counter: &mut Counter,
 
         msg_data: vector<u8>,
@@ -68,9 +68,9 @@ module axelar::counter_axelar_interface {
     ) {
         // if this passes, we're good
         let message = messenger::create_message(validators, msg_data, signatures);
-        let ( _source, _destination, payload ) = messenger::consume_message(beacon, message);
+        let ( _source, _destination, payload ) = messenger::consume_message(channel, message);
 
-        assert!(messenger::beacon_data(beacon) == &object::id(counter), ETargetMismatch);
+        assert!(messenger::channel_data(channel) == &object::id(counter), ETargetMismatch);
 
         if (payload == b"increment") {
             counter::increment(counter);
