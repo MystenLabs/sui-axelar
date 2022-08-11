@@ -76,5 +76,4 @@ module axelar::counter_axelar_interface {
             counter::increment(counter);
         }
     }
-
 }
