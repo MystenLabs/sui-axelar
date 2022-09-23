@@ -38,18 +38,29 @@ module axelar::counter {
 
 /// Example implementation of a messenger service for the
 module axelar::counter_axelar_interface {
-    use axelar::messenger::{Self, Channel, Validators as AxelarValidators};
-    use axelar::counter::{Self, Counter};
+    use axelar::messenger::{Self, Channel /*, Validators as AxelarValidators*/};
+    use axelar::counter::{Counter};
     use sui::tx_context::{TxContext};
-    use sui::object::{Self, ID};
+    use sui::object::{Self, UID, ID};
+    use sui::transfer;
 
     /// For when `Channel` is targeting a wrong `Counter`
     const ETargetMismatch: u64 = 0;
 
+    /// Wrapper to limit `Channel` access.
+    struct ICounter has key {
+        id: UID,
+        channel: Channel<ID>
+    }
+
     /// Create a `Channel` object pointing to a `Counter`. Any `Counter` can be used for that
-    /// and there's no limit to how many objects there are.
-    public fun setup_interface(for: &Counter, ctx: &mut TxContext): Channel<ID> {
-        messenger::create_channel(object::id(for), ctx)
+    /// and there's no limit to how many objects there are. Wrap result into an `ICounter`
+    /// object to limit access to it.
+    public fun setup_interface(for: &Counter, ctx: &mut TxContext) {
+        transfer::share_object(ICounter {
+            id: object::new(ctx),
+            channel: messenger::create_channel(object::id(for), ctx)
+        })
     }
 
     /// Do the magic of message processing using the `messenger` module.
@@ -59,21 +70,23 @@ module axelar::counter_axelar_interface {
     /// lead to command never getting executed. Alternatively, we could store messages in a
     /// Channel but that opens up a whole lot of security vulnerabilities related to delays.
     public entry fun process_msg(
-        validators: &AxelarValidators,
-        channel: &mut Channel<ID>,
-        counter: &mut Counter,
+        // validators: &AxelarValidators,
+        // channel: &mut ICounter,
+        // counter: &mut Counter,
 
-        msg_data: vector<u8>,
-        signatures: vector<vector<u8>>,
+        // msg_data: vector<u8>,
+        // signatures: vector<vector<u8>>,
+
+        // ctx: &mut TxContext
     ) {
         // if this passes, we're good
-        let message = messenger::create_message(validators, msg_data, signatures);
-        let ( _source, _destination, payload ) = messenger::consume_message(channel, message);
+        // let message = messenger::create_message(validators, msg_data, signatures, ctx);
+        // let ( _source, _destination, payload ) = messenger::consume_message(&mut channel.channel, message);
 
-        assert!(messenger::channel_data(channel) == &object::id(counter), ETargetMismatch);
+        // assert!(messenger::channel_data(&channel.channel) == &object::id(counter), ETargetMismatch);
 
-        if (payload == b"increment") {
-            counter::increment(counter);
-        }
+        // if (payload == b"increment") {
+        //     counter::increment(counter);
+        // }
     }
 }

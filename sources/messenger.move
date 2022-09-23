@@ -32,7 +32,12 @@ module axelar::messenger {
     use sui::object::{Self, UID};
     use sui::vec_set::{Self, VecSet};
     use sui::tx_context::{TxContext};
+    use sui::vec_map::{Self, VecMap};
+    use sui::crypto;
+
     use std::hash::sha3_256;
+    use std::vector as vec;
+    use std::bcs;
 
     /// For when trying to consume the wrong object.
     const EWrongDestination: u64 = 0;
@@ -43,6 +48,9 @@ module axelar::messenger {
     /// For when message has already been processed and submitted twice.
     const EDuplicateMessage: u64 = 2;
 
+    /// Used for a check in `validate_proof` function.
+    const OLD_KEY_RETENTION: u64 = 16;
+
     /// Mocking this for now until actual implementation of validator management.
     /// Nevertheless it will be a shared / frozen object accessible to everyone
     /// on the network.
@@ -51,6 +59,8 @@ module axelar::messenger {
     /// will implement messenger interface for the `Validators` object.
     struct Validators has key {
         id: UID,
+        epoch: u64,
+        epoch_for_hash: VecMap<vector<u8>, u64>
     }
 
     /// Generic target for the messaging system.
@@ -91,10 +101,11 @@ module axelar::messenger {
         data: T
     }
 
-    /// Message 'Hot Potato' which can only be consumed if a `Channel` object
-    /// is supplied. Does not require additional generic field to operate
-    /// as linking by `id_bytes` is more than enough.
-    struct Message {
+    /// Message object which can consumed only by a `Channel` object.
+    /// Does not require additional generic field to operate as linking
+    /// by `id_bytes` is more than enough.
+    struct Message has key, store {
+        id: UID,
         /// The target object's ID bytes. We have to use ID bytes
         /// here because ID is not constructable, and we build the
         /// destination from raw bytes.
@@ -134,13 +145,31 @@ module axelar::messenger {
     /// Spawn a message from the passed data and signatures. Data is processed and
     /// used to construct a `Message` struct, and the signatures are checked to be
     /// of current validators from the validator set.
-    public fun create_message(v: &Validators, data: vector<u8>, signatures: vector<vector<u8>>): Message {
-        assert!(validate_signatures(v, signatures), ESignatureInvalid);
+    public fun create_message(
+        v: &Validators,
+
+        data: vector<u8>,
+        operators: vector<address>,
+        weights: vector<u64>,
+        threshold: u64,
+        signatures: vector<vector<u8>>,
+
+        ctx: &mut TxContext
+    ): Message {
+        assert!(validate_proof(
+            v,
+            crypto::keccak256(data),
+            operators,
+            weights,
+            threshold,
+            signatures
+        ), ESignatureInvalid);
 
         // TODO: set on the message bytes format to make data parse-able
         let ( source, destination, target_id, payload ) = parse_message(data);
 
         Message {
+            id: object::new(ctx),
             target_id,
             source,
             destination,
@@ -157,11 +186,12 @@ module axelar::messenger {
     ///
     /// TODO: consider returning a droppable object instead of tuple.
     public fun consume_message<T: store + drop>(t: &mut Channel<T>, m: Message): (vector<u8>, vector<u8>, vector<u8>) {
-        let Message { target_id, source, destination, payload } = m;
+        let Message { id, target_id, source, destination, payload } = m;
 
         // TODO: figure out a way to provide unique identifier for the message (payload? signatures? hash contents?)
         assert!(!vec_set::contains(&t.messages, &sha3_256(payload)), EDuplicateMessage);
         assert!(target_id == object::id_bytes(t), EWrongDestination);
+        object::delete(id);
 
         (source, destination, payload)
     }
@@ -186,6 +216,8 @@ module axelar::messenger {
 
     /// Internal function which parses message bytes and returns message parameters:
     /// ( source_chain, destination_chain, destination_address, payload )
+    ///
+    /// Consider using BCS bytes for that...
     fun parse_message(_msg: vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
         (
             vector[],
@@ -195,16 +227,48 @@ module axelar::messenger {
         )
     }
 
-    /// Mocked version of the signature verification function.
-    /// Requires a shared object with the list of validators to make sure the signatures match
-    fun validate_signatures(_v: &Validators, _signatures: vector<vector<u8>>): bool {
-        true
-    }
-}
+    /// Implementation of the `AxelarAuthWeighted.validateProof`.
+    /// Does proof validation, fails when proof is invalid or if weight
+    /// threshold is not reached.
+    fun validate_proof(
+        validators: &Validators,
 
-// We'll need something like that for the signature recovery
-module me::crypto {
-    public fun ecdsa_recover(_msg: vector<u8>, _signatures: vector<vector<u8>>): vector<address> {
-        vector[ @0x1, @0x2, @0x3, @0x4 ]
+        hash: vector<u8>,
+        operators: vector<address>,
+        weights: vector<u64>,
+        threshold: u64,
+        signatures: vector<vector<u8>>
+    ): bool {
+        // turn everything into bcs bytes and merge together
+        let operators_hash = crypto::keccak256(bcs::to_bytes(&vector[
+            bcs::to_bytes(&operators),
+            bcs::to_bytes(&weights),
+            bcs::to_bytes(&threshold),
+        ]));
+
+        let operators_length = vec::length(&operators);
+        let operators_epoch = *vec_map::get(&validators.epoch_for_hash, &operators_hash);
+        let epoch = validators.epoch;
+
+        assert!(operators_epoch != 0 && epoch - operators_epoch < OLD_KEY_RETENTION, 0); // EInvalidOperators
+
+        // _validateSignatures() implementation
+        let (i, weight, operator_index) = (0, 0, 0);
+        let total_signatures = vec::length(&signatures);
+
+        while (i < total_signatures) {
+            let signed_by = crypto::ecrecover(*vec::borrow(&signatures, i), *&hash);
+            while (operator_index < operators_length && &signed_by != &bcs::to_bytes(vec::borrow(&operators, operator_index))) {
+                operator_index = operator_index + 1;
+            };
+
+            assert!(operator_index == operators_length, 0); // EMalformedSigners
+
+            weight = weight + *vec::borrow(&weights, operator_index);
+            if (weight >= threshold) { return true };
+            operator_index = operator_index + 1;
+        };
+
+        abort 0 // ELowSignaturesWeight
     }
 }
