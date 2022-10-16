@@ -33,6 +33,9 @@ module axelar::bcs {
     /// Address length in Sui is 20 bytes.
     const SUI_ADDRESS_LENGTH: u64 = 20;
 
+    public fun to_bytes<T>(value: &T): vector<u8> {
+        std::bcs::to_bytes(value)
+    }
 
     /// Read address from the bcs-serialized bytes.
     public fun peel_address(bcs: &mut vector<u8>): address {

@@ -32,7 +32,7 @@ module axelar::messenger {
     use sui::object::{Self, UID};
     use sui::vec_set::{Self, VecSet};
     use sui::tx_context::{TxContext};
-    use sui::vec_map::{VecMap};
+    use sui::vec_map::{Self, VecMap};
     use sui::ecdsa;
 
     use std::vector as vec;
@@ -54,6 +54,12 @@ module axelar::messenger {
 
     /// For when number of commands does not match number of command ids.
     const EInvalidCommands: u64 = 4;
+
+    /// For when operators have changed, and proof is no longer valid.
+    const EInvalidOperators: u64 = 5;
+
+    /// For when number of signatures for the message is below the threshold.
+    const ELowSignaturesWeight: u64 = 6;
 
     /// Used for a check in `validate_proof` function.
     const OLD_KEY_RETENTION: u64 = 16;
@@ -181,6 +187,7 @@ module axelar::messenger {
     /// Input data must be serialized with BCS (see specification
     /// here: https://github.com/diem/bcs).
     public fun create_messages(
+        validators: &mut Validators,
         input: vector<u8>,
         ctx: &mut TxContext
     ): vector<Message> {
@@ -190,7 +197,7 @@ module axelar::messenger {
         );
 
         let message_hash = ecdsa::keccak256(&data);
-        let _allow_operatorship_transfer = validate_proof(message_hash, proof);
+        let _allow_operatorship_transfer = validate_proof(validators, message_hash, proof);
 
         let (chain_id, command_ids, commands, params) = (
             bcs::peel_u64(&mut data),
@@ -243,7 +250,7 @@ module axelar::messenger {
     }
 
     /// [DEPRECATED]
-    /// 
+    ///
     /// Spawn a message from the passed data and signatures. Data is processed and
     /// used to construct a `Message` struct, and the signatures are checked to be
     /// of current validators from the validator set.
@@ -271,7 +278,6 @@ module axelar::messenger {
             payload
         } = m;
 
-        // TODO: figure out a way to provide unique identifier for the message (payload? signatures? hash contents?)
         assert!(!vec_set::contains(&t.messages, &msg_id), EDuplicateMessage);
         assert!(target_id == object::uid_to_address(&t.id), EWrongDestination);
         object::delete(id);
@@ -283,6 +289,15 @@ module axelar::messenger {
             payload_hash,
             payload
         )
+    }
+
+    #[test_only]
+    /// Test-only function that replaces `target_id` with the channel ID.
+    public fun consume_message_ignore_uid<T: store>(
+        t: &mut Channel<T>, m: Message
+    ): (&mut T, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+        m.target_id = bcs::peel_address(&mut object::uid_to_bytes(&t.id));
+        consume_message(t, m)
     }
 
     /// Send a message to another chain. Supply the event data and the
@@ -309,41 +324,44 @@ module axelar::messenger {
     /// Does proof validation, fails when proof is invalid or if weight
     /// threshold is not reached.
     fun validate_proof(
-        _message_hash: vector<u8>,
-        _proof: vector<u8>
+        validators: &mut Validators,
+        message_hash: vector<u8>,
+        proof: vector<u8>
     ): bool {
-        // turn everything into bcs bytes and merge together
-        // let operators_hash = ecdsa::keccak256(bcs::to_bytes(&vector[
-        //     bcs::to_bytes(&operators),
-        //     bcs::to_bytes(&weights),
-        //     bcs::to_bytes(&threshold),
-        // ]));
+        // Turn everything into bcs bytes and merge together.
+        let (operators, weights, threshold, signatures) = (
+            bcs::peel_vec_address(&mut proof),
+            bcs::peel_vec_u64(&mut proof),
+            bcs::peel_u64(&mut proof),
+            bcs::peel_vec_vec_u8(&mut proof)
+        );
 
-        // let operators_length = vec::length(&operators);
-        // let operators_epoch = *vec_map::get(&validators.epoch_for_hash, &operators_hash);
-        // let epoch = validators.epoch;
+        // TODO: revisit this line and change the way operators hash is generated.
+        let operators_hash = ecdsa::keccak256(&bcs::to_bytes(&operators));
+        let operators_length = vec::length(&operators);
+        let _operators_epoch = *vec_map::get(&validators.epoch_for_hash, &operators_hash);
+        let _epoch = validators.epoch;
 
-        // assert!(operators_epoch != 0 && epoch - operators_epoch < OLD_KEY_RETENTION, 0); // EInvalidOperators
+        // TODO: unblock once there's enough signatures for testing.
+        // assert!(operators_epoch != 0 && epoch - operators_epoch < OLD_KEY_RETENTION, EInvalidOperators);
 
-        // // _validateSignatures() implementation
-        // let (i, weight, operator_index) = (0, 0, 0);
-        // let total_signatures = vec::length(&signatures);
+        let (i, weight, operator_index) = (0, 0, 0);
+        let total_signatures = vec::length(&signatures);
 
-        // while (i < total_signatures) {
-        //     let signed_by = ecdsa::ecrecover(*vec::borrow(&signatures, i), *&hash);
-        //     while (operator_index < operators_length && &signed_by != &bcs::to_bytes(vec::borrow(&operators, operator_index))) {
-        //         operator_index = operator_index + 1;
-        //     };
+        while (i < total_signatures) {
+            let signed_by = ecdsa::ecrecover(vec::borrow(&signatures, i), &message_hash);
+            while (operator_index < operators_length && &signed_by != &bcs::to_bytes(vec::borrow(&operators, operator_index))) {
+                operator_index = operator_index + 1;
+            };
 
-        //     assert!(operator_index == operators_length, 0); // EMalformedSigners
+            assert!(operator_index == operators_length, 0); // EMalformedSigners
 
-        //     weight = weight + *vec::borrow(&weights, operator_index);
-        //     if (weight >= threshold) { return true };
-        //     operator_index = operator_index + 1;
-        // };
+            weight = weight + *vec::borrow(&weights, operator_index);
+            if (weight >= threshold) { return true };
+            operator_index = operator_index + 1;
+        };
 
-        // abort 0 // ELowSignaturesWeight
-        true
+        abort ELowSignaturesWeight
     }
 
     // Test message for the `test_execute` test.
@@ -372,12 +390,23 @@ module axelar::messenger {
     #[test] fun test_execute() {
         use sui::test_scenario::{Self as ts, ctx};
 
-        let scenario = ts::begin(@0x0);
-        let messages = create_messages(MESSAGE, ctx(&mut scenario));
+        let test = ts::begin(@0x0);
+
+        // create validators for testing
+        let validators = Validators {
+            id: object::new(ctx(&mut test)),
+            epoch: 1,
+            epoch_for_hash: vec_map::empty()
+        };
+
+        let messages = create_messages(&mut validators, MESSAGE, ctx(&mut test));
+
+        // validator cleanup
+        let Validators { id, epoch: _, epoch_for_hash: _ } = validators;
 
         delete_messages(messages);
-
-        ts::end(scenario);
+        object::delete(id);
+        ts::end(test);
     }
 }
 
