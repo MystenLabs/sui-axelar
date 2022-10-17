@@ -234,6 +234,7 @@ module axelar::messenger {
                     payload_hash: bcs::peel_vec_u8(&mut payload),
                     payload
                 });
+                continue
             } else if (cmd_selector == &SELECTOR_APPROVE_CONTRACT_CALL_WITH_MINT) {
                 // TODO: remember me, friend
                 continue
@@ -324,7 +325,7 @@ module axelar::messenger {
     /// Does proof validation, fails when proof is invalid or if weight
     /// threshold is not reached.
     fun validate_proof(
-        validators: &mut Validators,
+        _validators: &mut Validators,
         message_hash: vector<u8>,
         proof: vector<u8>
     ): bool {
@@ -337,10 +338,10 @@ module axelar::messenger {
         );
 
         // TODO: revisit this line and change the way operators hash is generated.
-        let operators_hash = ecdsa::keccak256(&bcs::to_bytes(&operators));
+        let _operators_hash = ecdsa::keccak256(&bcs::to_bytes(&operators));
         let operators_length = vec::length(&operators);
-        let _operators_epoch = *vec_map::get(&validators.epoch_for_hash, &operators_hash);
-        let _epoch = validators.epoch;
+        // let _operators_epoch = *vec_map::get(&validators.epoch_for_hash, &operators_hash);
+        // let _epoch = validators.epoch;
 
         // TODO: unblock once there's enough signatures for testing.
         // assert!(operators_epoch != 0 && epoch - operators_epoch < OLD_KEY_RETENTION, EInvalidOperators);
@@ -367,7 +368,7 @@ module axelar::messenger {
     // Test message for the `test_execute` test.
     // Generated via the `presets` script.
     #[test_only]
-    const MESSAGE: vector<u8> = x"900101000000000000000209726f6775655f6f6e650a6178656c61725f74776f0210646f5f736f6d657468696e675f66756e0b646f5f69745f616761696e02270345544803307830e46c640828a7e9277c0035d90332edf9ed18bf9304000000000500000000002a064158454c415203307831e46c640828a7e9277c0035d90332edf9ed18bf93040000000005000000000006010203040506";
+    const MESSAGE: vector<u8> = x"900101000000000000000209726f6775655f6f6e650a6178656c61725f74776f0210646f5f736f6d657468696e675f66756e0b646f5f69745f616761696e02270345544803307830e46c640828a7e9277c0035d90332edf9ed18bf9304000000000500000000002a064158454c415203307831e46c640828a7e9277c0035d90332edf9ed18bf9304000000000500000000006901e46c640828a7e9277c0035d90332edf9ed18bf93011027000000000000f40100000000000001413d65101e34167cf591221afa7e37f979cc36e9a8d553280190243d19afcd055268f865fb1c68f028afb142f70b9658f867a9d6525878bf41a112ae18ee98ac581c";
 
     #[test_only]
     /// Handy method for burning `vector<Message>` returned by the `execute` function.
@@ -385,6 +386,13 @@ module axelar::messenger {
             object::delete(id);
         };
         vec::destroy_empty(msgs);
+    }
+
+    #[test] fun test_ecrecover() {
+        let signature = x"813a5a25070ff58e904d227fda5366afbb4f09e4e555a49d14ae29ed00aa30962ef3814f4210266ceab8c9be8d9472e9c5a3ce91824fba3b5a04605801969df61b";
+        let message_hash = x"3a84f659e094cd76d475e0e777b512d1f13cfc68a2a1f6713d7e64d9b47582d0";
+
+        std::debug::print(&ecdsa::ecrecover(&signature, &message_hash));
     }
 
     #[test] fun test_execute() {
@@ -408,12 +416,4 @@ module axelar::messenger {
         object::delete(id);
         ts::end(test);
     }
-}
-
-#[test_only]
-module axelar::messenger_tests {
-    // use std::vector as v;
-    // use axelar::bcs;
-
-
 }

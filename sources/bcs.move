@@ -18,9 +18,6 @@ module axelar::bcs {
     use std::vector as v;
     use sui::bcs::{Self};
 
-    #[test_only]
-    use sui::bcs::to_bytes;
-
     /// For when bytes length is less than required for deserialization.
     const EOutOfRange: u64 = 0;
 

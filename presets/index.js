@@ -24,6 +24,13 @@ bcs.registerStructType('Input', {
     proof: 'vector<u8>'
 });
 
+bcs.registerStructType('Proof', {
+    operators: 'vector<SuiAddress>',
+    weights: 'vector<u64>',
+    threshold: 'u64',
+    signatures: 'vector<vector<u8>>'
+});
+
 // internals of the message
 bcs.registerStructType('AxelarMessage', {
     chain_id: 'u64',
@@ -44,7 +51,9 @@ bcs.registerStructType('GenericMessage', {
 
 // basic and utility types
 bcs.registerVectorType('vector<u8>', 'u8');
+bcs.registerVectorType('vector<u64>', 'u64');
 bcs.registerVectorType('vector<vector<u8>>', 'vector<u8>');
+bcs.registerVectorType('vector<SuiAddress>', 'SuiAddress');
 bcs.registerVectorType('vector<string>', bcs.STRING);
 bcs.registerAddressType('SuiAddress', 20, 'hex');
 
@@ -74,10 +83,26 @@ const message = bcs.ser('AxelarMessage', {
 }).toBytes();
 
 const message_hash = keccak256(message);
-const input = bcs.ser('Input', {
-    proof: [ 1, 2, 3, 4, 5, 6 ],
-    data: message
+
+console.log('\nMESSAGE HASH:', message_hash);
+
+wallet.signMessage(fromHEX(message_hash)).then((signature) => {
+    // console.log('\nSIGNATURE:', ethers.utils.splitSignature(signature));
+    console.log('signature:', signature);
+
+    console.log('\nRECOVERED', ethers.utils.verifyMessage(fromHEX(message_hash), signature));
+
+    const proof = bcs.ser('Proof', {
+        operators: [ ADDRESS ],
+        weights: [ '10000' ],
+        threshold: '500',
+        signatures: [ fromHEX(signature) ]
+    }).toBytes();
+
+    const input = bcs.ser('Input', {
+        data: message,
+        proof: proof,
+    });
+
+    console.log('\nINPUT:', input.toString('hex'));
 });
-
-console.log(input.toString('hex'));
-
