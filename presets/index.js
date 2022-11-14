@@ -6,17 +6,15 @@
  * General Message Passing protocol
  */
 
-const { ethers, utils: { keccak256 } } = require('ethers');
-const { bcs, fromHEX } = require('@mysten/bcs');
+const secp256k1 = require('secp256k1')
+const { utils: { keccak256 } } = require('ethers');
+const { bcs, fromHEX, toHEX } = require('@mysten/bcs');
 
-// to generate new MNEMONIC and ADDRESS use:
-// const wallet = ethers.Wallet.createRandom();
-// const MNEMONIC = wallet.mnemonic;
+// generate privKey
+const privKey = Buffer.from('9027dcb35b21318572bda38641b394eb33896aa81878a4f0e7066b119a9ea000', 'hex');
 
-const MNEMONIC = 'under elbow cherry basic stuff salad position gym harbor soup enough dignity';
-const ADDRESS  = '0xe46c640828a7e9277c0035d90332edf9ed18bf93';
-
-const wallet = ethers.Wallet.fromMnemonic(MNEMONIC);
+// get the public key in a compressed format
+const pubKey = secp256k1.publicKeyCreate(privKey);
 
 // input argument for the tx
 bcs.registerStructType('Input', {
@@ -25,7 +23,8 @@ bcs.registerStructType('Input', {
 });
 
 bcs.registerStructType('Proof', {
-    operators: 'vector<SuiAddress>',
+    // operators is a 33 byte / for now at least
+    operators: 'vector<vector<u8>>',
     weights: 'vector<u64>',
     threshold: 'u64',
     signatures: 'vector<vector<u8>>'
@@ -57,8 +56,9 @@ bcs.registerVectorType('vector<SuiAddress>', 'SuiAddress');
 bcs.registerVectorType('vector<string>', bcs.STRING);
 bcs.registerAddressType('SuiAddress', 20, 'hex');
 
+const ZERO_ADDR = '0x'.padEnd(62, '0');
 const message = bcs.ser('AxelarMessage', {
-    chain_id: '1',
+    chain_id: 1,
     command_ids: [ 'rogue_one', 'axelar_two' ],
     commands: [
         'do_something_fun',
@@ -69,40 +69,43 @@ const message = bcs.ser('AxelarMessage', {
             source_chain: 'ETH',
             source_address: '0x0',
             payload_hash: [0,0,0,0],
-            target_id: ADDRESS, // using address here for simlicity...
+            target_id: ZERO_ADDR, // using address here for simlicity...
             payload: [0,0,0,0,0]
         }).toBytes(),
         bcs.ser('GenericMessage', {
             source_chain: 'AXELAR',
             source_address: '0x1',
             payload_hash: [0,0,0,0],
-            target_id: ADDRESS, // ...
+            target_id: ZERO_ADDR, // ...
             payload: [0,0,0,0,0]
         }).toBytes(),
     ]
 }).toBytes();
 
-const message_hash = keccak256(message);
+const hashed = fromHEX(keccak256(message));
+const signed_data = secp256k1.ecdsaSign(hashed, privKey).signature;
 
-console.log('\nMESSAGE HASH:', message_hash);
+const proof = bcs.ser('Proof', {
+    operators: [ pubKey ],
+    weights: [ 100 ],
+    threshold: 10,
+    signatures: [ new Uint8Array([...signed_data, 0]) ]
+}).toBytes();
 
-wallet.signMessage(fromHEX(message_hash)).then((signature) => {
-    // console.log('\nSIGNATURE:', ethers.utils.splitSignature(signature));
-    console.log('signature:', signature);
+const input = bcs.ser('Input', {
+    data: message,
+    proof: proof
+}).toString('hex');
 
-    console.log('\nRECOVERED', ethers.utils.verifyMessage(fromHEX(message_hash), signature));
+console.log('OPERATOR: %s', toHEX(pubKey));
+console.log('DATA LENGTH: %d', message.length);
+console.log('PROOF LENGTH: %d', proof.length);
+console.log('INPUT: %s', input)
 
-    const proof = bcs.ser('Proof', {
-        operators: [ ADDRESS ],
-        weights: [ '10000' ],
-        threshold: '500',
-        signatures: [ fromHEX(signature) ]
-    }).toBytes();
+// console.log('VALIDATOR PUB_KEY: %s', toHEX(pubKey));
+// console.log('MESSAGE: %s', toHEX(message));
+// console.log('HASHED MESSAGE: %s', toHEX(hashed));
+// console.log('SIGNATURE: %s', toHEX(signed_data) + '00');
 
-    const input = bcs.ser('Input', {
-        data: message,
-        proof: proof,
-    });
-
-    console.log('\nINPUT:', input.toString('hex'));
-});
+// verify the signature
+// console.log(secp256k1.ecdsaVerify(sigObj.signature, hashed, pubKey))
