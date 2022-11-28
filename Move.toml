@@ -3,7 +3,7 @@ name = "axelar"
 version = "0.0.0"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework", rev = "45ba6bbb5fbd740a546393c681b1d1a30d758ff7" }
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework", rev = "4e3f7e1ef002153dc3845f51a198306c19bf0754" }
 
 [addresses]
 me = "0x0"

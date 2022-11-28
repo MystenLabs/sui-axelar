@@ -61,8 +61,8 @@ const message = bcs.ser('AxelarMessage', {
     chain_id: 1,
     command_ids: [ 'rogue_one', 'axelar_two' ],
     commands: [
-        'do_something_fun',
-        'do_it_again',
+        'approveContractCall',
+        'approveContractCall',
     ],
     params: [
         bcs.ser('GenericMessage', {

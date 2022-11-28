@@ -126,6 +126,8 @@ module axelar::messenger {
     /// Message object which can consumed only by a `Channel` object.
     /// Does not require additional generic field to operate as linking
     /// by `id_bytes` is more than enough.
+    ///
+    /// Consider naming this `axelar::messaging::CallApproval`.
     struct Message has key, store {
         id: UID,
         /// ID of the message, guaranteed to be unique by Axelar.
@@ -255,6 +257,8 @@ module axelar::messenger {
             } else if (cmd_selector == &SELECTOR_TRANSFER_OPERATORSHIP) {
                 // TODO: please, don't forget about me, champ
                 // filter msg_id in Validators
+
+                // CALL BUILT_IN_STUFF;
                 continue
             } else {
                 continue
@@ -460,6 +464,8 @@ module axelar::messenger {
 
     /// Compute operators hash from the list of `operators` (public keys).
     /// This hash is used in `Validators.epoch_for_hash`.
+    ///
+    /// TODO: also take weights and thresholds (include into hashing).
     fun operators_hash(operators: &vector<vector<u8>>): vector<u8> {
         ecdsa::keccak256(&bcs::to_bytes(operators))
     }
