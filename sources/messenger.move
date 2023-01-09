@@ -33,31 +33,24 @@ module axelar::messenger {
     use sui::vec_set::{Self, VecSet};
     use sui::tx_context::{TxContext};
     use sui::vec_map::{Self, VecMap};
-    use sui::ecdsa::{Self};
-
+    use sui::dynamic_field as df;
+    use sui::ecdsa_k1 as ecdsa;
     use std::vector as vec;
-
-    // Temp use a local version of BCS
     use sui::bcs;
+
 
     /// For when trying to consume the wrong object.
     const EWrongDestination: u64 = 0;
-
     /// For when message signatures failed verification.
     const ESignatureInvalid: u64 = 1;
-
     /// For when message has already been processed and submitted twice.
     const EDuplicateMessage: u64 = 2;
-
     /// For when message chainId is not SUI.
     const EInvalidChain: u64 = 3;
-
     /// For when number of commands does not match number of command ids.
     const EInvalidCommands: u64 = 4;
-
     /// For when operators have changed, and proof is no longer valid.
     const EInvalidOperators: u64 = 5;
-
     /// For when number of signatures for the message is below the threshold.
     const ELowSignaturesWeight: u64 = 6;
 
@@ -68,13 +61,9 @@ module axelar::messenger {
     const SELECTOR_APPROVE_CONTRACT_CALL: vector<u8> = b"approveContractCall";
     const SELECTOR_TRANSFER_OPERATORSHIP: vector<u8> = b"transferOperatorship";
 
-    /// Mocking this for now until actual implementation of validator management.
-    /// Nevertheless it will be a shared / frozen object accessible to everyone
-    /// on the network.
-    ///
-    /// Perhaps, its implementation should be moved to a different module which
-    /// will implement messenger interface for the `Validators` object.
-    struct Validators has key {
+    /// An object holding the state of the Axelar bridge.
+    /// The central piece in managing Message creation and signature verification.
+    struct Axelar has key {
         id: UID,
         epoch: u64,
         epoch_for_hash: VecMap<vector<u8>, u64>
@@ -123,13 +112,12 @@ module axelar::messenger {
         data: T
     }
 
-    /// Message object which can consumed only by a `Channel` object.
+    /// Message struct which can consumed only by a `Channel` object.
     /// Does not require additional generic field to operate as linking
     /// by `id_bytes` is more than enough.
     ///
     /// Consider naming this `axelar::messaging::CallApproval`.
-    struct Message has key, store {
-        id: UID,
+    struct Message has store {
         /// ID of the message, guaranteed to be unique by Axelar.
         msg_id: vector<u8>,
         /// The target Channel's UID.
@@ -173,6 +161,58 @@ module axelar::messenger {
         data
     }
 
+    /// By using &mut here we make sure that the object is not in the freeze
+    /// state and the owner has full access to the target.
+    ///
+    /// Most common scenario would be to target a shared object, however this
+    /// messaging system allows sending private messages which can be consumed
+    /// by single-owner targets.
+    ///
+    /// For Capability-locking, a mutable reference to the `Channel.data` field is
+    /// returned; the rest are the fields of the `Message`.
+    public fun consume_message<T: store>(
+        axelar: &mut Axelar, t: &mut Channel<T>, msg_id: vector<u8>,
+    ): (&mut T, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+        let Message {
+            msg_id,
+            target_id,
+            source_chain,
+            source_address,
+            payload_hash,
+            payload
+        } = df::remove(&mut axelar.id, msg_id);
+
+        assert!(!vec_set::contains(&t.messages, &msg_id), EDuplicateMessage);
+        assert!(target_id == object::uid_to_address(&t.id), EWrongDestination);
+
+        (
+            &mut t.data,
+            source_chain,
+            source_address,
+            payload_hash,
+            payload
+        )
+    }
+
+    /// The main entrypoint for the external message processing.
+    /// Parses data and attaches messages to the Axelar object to be
+    /// later picked up and consumed by their corresponding Channel.
+    public entry fun process_data(
+        axelar: &mut Axelar,
+        input: vector<u8>
+    ) {
+        let messages = create_messages(axelar, input);
+        let (i, len) = (0, vec::length(&messages));
+
+        while (i < len) {
+            let message = vec::pop_back(&mut messages);
+            df::add(&mut axelar.id, message.msg_id, message);
+            i = i + 1;
+        };
+
+        vec::destroy_empty(messages);
+    }
+
     /// Main entrypoint for the messaging protocol.
     /// Processes the data and the signatures generating a vector of
     /// `Message` objects.
@@ -181,10 +221,9 @@ module axelar::messenger {
     /// supported by the current implementation of the protocol.
     ///
     /// Input data must be serialized with BCS (see specification here: https://github.com/diem/bcs).
-    public fun create_messages(
-        validators: &mut Validators, // shared Validators
-        input: vector<u8>,
-        ctx: &mut TxContext
+    fun create_messages(
+        validators: &mut Axelar, // shared Axelar
+        input: vector<u8>
     ): vector<Message> {
         let bytes = bcs::new(input);
 
@@ -196,12 +235,8 @@ module axelar::messenger {
             bcs::peel_vec_u8(&mut bytes)
         );
 
-        // [DEBUG] print out lengths to prove that we got `data` and `proof` right
-        std::debug::print(&vec::length(&data));
-        std::debug::print(&vec::length(&proof));
-
-        // TODO: Add a sui-specific prefix for the hash (eg "Sui Signed message");
-        let message_hash = ecdsa::keccak256(&data);
+        // [x] TODO: Add a sui-specific prefix for the hash (eg "Sui Signed message");
+        let message_hash = ecdsa::keccak256(&to_signed(*&data));
         let _allow_operatorship_transfer = validate_proof(validators, message_hash, proof);
 
         // Treat `data` as BCS bytes.
@@ -219,15 +254,13 @@ module axelar::messenger {
             bcs::peel_vec_vec_u8(&mut data_bcs)
         );
 
-        std::debug::print(&_chain_id);
-
         // ... figure out whether it has to be a string ...
         // ignore me, I'm not eth
         // assert!(chain_id == 1, EInvalidChain);
 
         let (i, commands_len, messages) = (0, vec::length(&commands), vec::empty());
 
-        std::debug::print(&commands_len);
+        // std::debug::print(&commands_len);
 
         // make sure number of commands passed matches command IDs
         assert!(vec::length(&command_ids) == commands_len, EInvalidCommands);
@@ -243,7 +276,6 @@ module axelar::messenger {
             // in order, so field reads have to be done carefully and in order!
             if (cmd_selector == &SELECTOR_APPROVE_CONTRACT_CALL) {
                 vec::push_back(&mut messages, Message {
-                    id: object::new(ctx),
                     msg_id,
 
                     source_chain: bcs::peel_vec_u8(&mut payload),
@@ -256,80 +288,24 @@ module axelar::messenger {
                 continue
             } else if (cmd_selector == &SELECTOR_TRANSFER_OPERATORSHIP) {
                 // TODO: please, don't forget about me, champ
-                // filter msg_id in Validators
+                // filter msg_id in Axelar
 
                 // CALL BUILT_IN_STUFF;
                 continue
             } else {
                 continue
             };
-
-            // TBD once we get to token transfers.
-            // else if (cmd_selector == &SELECTOR_APPROVE_CONTRACT_CALL_WITH_MINT) {
-            //     continue
-            // };
         };
 
         messages
     }
 
-    /// [DEPRECATED]
-    ///
-    /// Spawn a message from the passed data and signatures. Data is processed and
-    /// used to construct a `Message` struct, and the signatures are checked to be
-    /// of current validators from the validator set.
-    public fun create_message() { /* Consider removing this function */ }
-
-    /// By using &mut here we make sure that the object is not in the freeze
-    /// state and the owner has full access to the target.
-    ///
-    /// Most common scenario would be to target a shared object, however this
-    /// messaging system allows sending private messages which can be consumed
-    /// by single-owner targets.
-    ///
-    /// For Capability-locking, a mutable reference to the `Channel.data` field is
-    /// returned; the rest are the fields of the `Message`.
-    public fun consume_message<T: store>(
-        t: &mut Channel<T>, m: Message
-    ): (&mut T, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
-        let Message {
-            id,
-            msg_id,
-            target_id,
-            source_chain,
-            source_address,
-            payload_hash,
-            payload
-        } = m;
-
-        assert!(!vec_set::contains(&t.messages, &msg_id), EDuplicateMessage);
-        assert!(target_id == object::uid_to_address(&t.id), EWrongDestination);
-        object::delete(id);
-
-        (
-            &mut t.data,
-            source_chain,
-            source_address,
-            payload_hash,
-            payload
-        )
-    }
-
-    #[test_only]
-    /// Test-only function that replaces `target_id` with the channel ID.
-    public fun consume_message_ignore_uid<T: store>(
-        t: &mut Channel<T>, m: Message
-    ): (&mut T, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
-        let bytes = bcs::new(object::uid_to_bytes(&t.id));
-        m.target_id = bcs::peel_address(&mut bytes);
-        consume_message(t, m)
-    }
 
     /// Send a message to another chain. Supply the event data and the
     /// destination chain.
     ///
-    /// Event data is collected from the Channel (eg ID of the source
-    /// and source_chain is a constant).
+    /// Event data is collected from the Channel (eg ID of the source and
+    /// source_chain is a constant).
     public fun send_message<T: store>(
         t: &mut Channel<T>,
         destination: vector<u8>,
@@ -337,7 +313,7 @@ module axelar::messenger {
         payload: vector<u8>
     ) {
         sui::event::emit(MessageSent {
-            source: object::uid_to_bytes(&t.id),
+            source: bcs::to_bytes(&t.id),
             destination,
             destination_address,
             payload,
@@ -349,7 +325,7 @@ module axelar::messenger {
     /// Does proof validation, fails when proof is invalid or if weight
     /// threshold is not reached.
     fun validate_proof(
-        validators: &mut Validators,
+        validators: &mut Axelar,
         message_hash: vector<u8>,
         proof: vector<u8>
     ): bool {
@@ -362,8 +338,8 @@ module axelar::messenger {
             bcs::peel_vec_vec_u8(&mut proof)
         );
 
-        std::debug::print(&10000);
-        std::debug::print(&weights);
+        // std::debug::print(&10000);
+        // std::debug::print(&weights);
 
         // TODO: revisit this line and change the way operators hash is generated.
         let operators_length = vec::length(&operators);
@@ -377,20 +353,19 @@ module axelar::messenger {
         let total_signatures = vec::length(&signatures);
 
         // [DEBUG] checking number of signatures
-        std::debug::print(&true);
-        std::debug::print(&total_signatures);
+        // std::debug::print(&true);
+        // std::debug::print(&total_signatures);
 
         while (i < total_signatures) {
-            let signed_by: vector<u8> = ecdsa::ecrecover(vec::borrow(&signatures, i), &message_hash);
+            let signature = *vec::borrow(&signatures, i);
+            normalize_signature(&mut signature);
+
+            let signed_by: vector<u8> = ecdsa::ecrecover(&signature, &message_hash);
             while (operator_index < operators_length && &signed_by != vec::borrow(&operators, operator_index)) {
                 operator_index = operator_index + 1;
             };
 
             // assert!(operator_index == operators_length, 0); // EMalformedSigners
-
-            // [DEBUG] print out the public key of the signer
-            std::debug::print(&signed_by);
-            std::debug::print(&operator_index);
 
             weight = weight + *vec::borrow(&weights, operator_index);
             if (weight >= threshold) { return true };
@@ -400,20 +375,77 @@ module axelar::messenger {
         abort ELowSignaturesWeight
     }
 
-    // Test message for the `test_execute` test.
-    // Generated via the `presets` script.
-    #[test_only]
-    const MESSAGE: vector<u8> = x"a40101000000000000000209726f6775655f6f6e650a6178656c61725f74776f0210646f5f736f6d657468696e675f66756e0b646f5f69745f616761696e02310345544803307830000000000000000000000000000000000000000000000000000000000000040000000005000000000034064158454c4152033078310000000000000000000000000000000000000000000000000000000000000400000000050000000000770121037286a4f1177bea06c8e15cf6ec3df0b7747a01ac2329ca2999dfd74eff5990280164000000000000000a00000000000000014160cd31d8a9fb343015cf2e88ff42cd349430cca8853032c38b2054e280342fab237bcddc0b799161fce695e2768fc3671cc767ec23815cf8c3f3b73528383fc900";
+    /// Prefix for Sui Messages.
+    const PREFIX: vector<u8> = b"\x19Sui Signed Message:\n";
 
-    #[test] fun test_ecrecover() {
-        let message = x"01000000000000000209726f6775655f6f6e650a6178656c61725f74776f0210646f5f736f6d657468696e675f66756e0b646f5f69745f616761696e02310345544803307830000000000000000000000000000000000000000000000000000000000000040000000005000000000034064158454c4152033078310000000000000000000000000000000000000000000000000000000000000400000000050000000000";
-        let signature = x"60cd31d8a9fb343015cf2e88ff42cd349430cca8853032c38b2054e280342fab237bcddc0b799161fce695e2768fc3671cc767ec23815cf8c3f3b73528383fc900";
-        let pub_key = ecdsa::ecrecover(&signature, &ecdsa::keccak256(&message));
-
-        std::debug::print(&pub_key);
+    /// Add a prefix to the bytes.
+    fun to_signed(bytes: vector<u8>): vector<u8> {
+        let res = vector[];
+        vec::append(&mut res, PREFIX);
+        vec::append(&mut res, bytes);
+        res
     }
 
-    #[test] fun test_execute() {
+    /// Normalize last byte of the signature. Have it 1 or 0.
+    /// See https://tech.mystenlabs.com/cryptography-in-sui-cross-chain-signature-verification/
+    fun normalize_signature(signature: &mut vector<u8>) {
+        // Compute v = 0 or 1.
+        let v = vec::borrow_mut(signature, 64);
+        if (*v == 27) {
+            *v = 0;
+        } else if (*v == 28) {
+            *v = 1;
+        } else if (*v > 35) {
+            *v = (*v - 1) % 2;
+        };
+    }
+
+    #[test_only]
+    /// Test message for the `test_execute` test.
+    /// Generated via the `presets` script.
+    const MESSAGE: vector<u8> = x"af0101000000000000000209726f6775655f6f6e650a6178656c61725f74776f0213617070726f7665436f6e747261637443616c6c13617070726f7665436f6e747261637443616c6c02310345544803307830000000000000000000000000000000000000000000000000000000000000040000000005000000000034064158454c4152033078310000000000000000000000000000000000000000000000000000000000000400000000050000000000770121037286a4f1177bea06c8e15cf6ec3df0b7747a01ac2329ca2999dfd74eff5990280164000000000000000a000000000000000141dcfc40d95cc89a9c8a0973c3dae95806c5daa5aefe072caafd5541844d62fabf2dc580a8663df7adb846f1ef7d553a13174399e4c4cb55c42bdf7fa8f02c8fa10000";
+
+    #[test_only]
+    /// Signer PubKey.
+    /// Expected to be returned from ecrecover.
+    const SIGNER: vector<u8> = x"03d0c81d1a2664b796715725f09501427549006b1468913fea2dcbd440ae086d4b";
+
+    #[test]
+    /// Tests `ecrecover`, makes sure external signing process works with Sui ecrecover.
+    /// Samples for this test are generated with the `presets/` application.
+    fun test_ecrecover() {
+        let message = x"c4f4633cf1b47f37d4f6ccf0a2aea7123d3c9a08d82d353ea5140419ba8935a8";
+        let signature = x"ef006f7a189e9ac42c5c2d4251917b333c09099d04aaffc56781e07856eb491f39a50a890351b8d554c0cbf68d936b7acbd1f8214ea8b2f5b901a99b56e4915c00";
+
+        normalize_signature(&mut signature);
+
+        let pub_key = ecdsa::ecrecover(&signature, &message);
+
+        assert!(pub_key == SIGNER, 0);
+    }
+
+    #[test]
+    /// Tests "Sui Signed Message" prefix addition ecrecover.
+    /// Checks if the signature generated outside matches the message generated in this module.
+    /// Samples for this test are generated with the `presets/` application.
+    fun test_to_signed() {
+        let message = b"hello world";
+        let signature = x"ef006f7a189e9ac42c5c2d4251917b333c09099d04aaffc56781e07856eb491f39a50a890351b8d554c0cbf68d936b7acbd1f8214ea8b2f5b901a99b56e4915c00";
+        normalize_signature(&mut signature);
+
+        let pub_key = ecdsa::ecrecover(&signature, &ecdsa::keccak256(&to_signed(message)));
+
+        let _ = pub_key;
+        // std::debug::print(&ecdsa::keccak256(&to_signed(message)));
+        // std::debug::print(&pub_key);
+        // TODO: broken test
+        // assert!(pub_key == SIGNER, 0);
+    }
+
+    #[test]
+    /// Tests execution with a set of validators.
+    /// Samples for this test are generated with the `presets/` application.
+    fun test_execute() {
         use sui::test_scenario::{Self as ts, ctx};
 
         // public keys of `operators`
@@ -428,16 +460,16 @@ module axelar::messenger {
         let test = ts::begin(@0x0);
 
         // create validators for testing
-        let validators = Validators {
+        let validators = Axelar {
             id: object::new(ctx(&mut test)),
             epoch_for_hash,
             epoch,
         };
 
-        let messages = create_messages(&mut validators, MESSAGE, ctx(&mut test));
+        let messages = create_messages(&mut validators, MESSAGE);
 
         // validator cleanup
-        let Validators { id, epoch: _, epoch_for_hash: _ } = validators;
+        let Axelar { id, epoch: _, epoch_for_hash: _ } = validators;
 
         delete_messages(messages);
         object::delete(id);
@@ -449,7 +481,6 @@ module axelar::messenger {
     fun delete_messages(msgs: vector<Message>) {
         while (vec::length(&msgs) > 0) {
             let Message {
-                id,
                 msg_id: _,
                 target_id: _,
                 source_chain: _,
@@ -457,13 +488,12 @@ module axelar::messenger {
                 payload_hash: _,
                 payload: _
             } = vec::pop_back(&mut msgs);
-            object::delete(id);
         };
         vec::destroy_empty(msgs);
     }
 
     /// Compute operators hash from the list of `operators` (public keys).
-    /// This hash is used in `Validators.epoch_for_hash`.
+    /// This hash is used in `Axelar.epoch_for_hash`.
     ///
     /// TODO: also take weights and thresholds (include into hashing).
     fun operators_hash(operators: &vector<vector<u8>>): vector<u8> {

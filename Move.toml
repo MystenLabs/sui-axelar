@@ -3,9 +3,8 @@ name = "axelar"
 version = "0.0.0"
 
 [dependencies]
-Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework", rev = "4e3f7e1ef002153dc3845f51a198306c19bf0754" }
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework", rev = "releases/sui-v0.20.0-release" }
 
 [addresses]
 me = "0x0"
 axelar = "0x0"
-
