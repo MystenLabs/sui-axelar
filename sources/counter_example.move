@@ -55,7 +55,7 @@ module axelar::counter {
         counter.value = counter.value + 1;
     }
 
-    /// Reset the counter. Can only be perfomed by Counter Owner.
+    /// Reset the counter. Can only be performed by Counter Owner.
     /// In this example, the only way to reset a counter is to receive a message
     /// from Axelar GMP.
     public entry fun reset(cap: &CounterOwnerCap, counter: &mut Counter) {
