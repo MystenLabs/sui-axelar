@@ -236,8 +236,8 @@ module axelar::messenger {
         );
 
         // [x] TODO: Add a sui-specific prefix for the hash (eg "Sui Signed message");
-        let message_hash = ecdsa::keccak256(&to_signed(*&data));
-        let _allow_operatorship_transfer = validate_proof(validators, message_hash, proof);
+        let message = to_signed(*&data);
+        let _allow_operatorship_transfer = validate_proof(validators, message, proof);
 
         // Treat `data` as BCS bytes.
         let data_bcs = bcs::new(data);
@@ -326,7 +326,7 @@ module axelar::messenger {
     /// threshold is not reached.
     fun validate_proof(
         validators: &mut Axelar,
-        message_hash: vector<u8>,
+        message: vector<u8>,
         proof: vector<u8>
     ): bool {
         // Turn everything into bcs bytes and split data.
@@ -359,8 +359,8 @@ module axelar::messenger {
         while (i < total_signatures) {
             let signature = *vec::borrow(&signatures, i);
             normalize_signature(&mut signature);
-
-            let signed_by: vector<u8> = ecdsa::ecrecover(&signature, &message_hash);
+            // Recover the pubkey using the raw messge and keccak as the hash function
+            let signed_by: vector<u8> = ecdsa::secp256k1_ecrecover(&signature, &message, ecdsa_k1::KECCAK256);
             while (operator_index < operators_length && &signed_by != vec::borrow(&operators, operator_index)) {
                 operator_index = operator_index + 1;
             };
@@ -414,12 +414,13 @@ module axelar::messenger {
     /// Tests `ecrecover`, makes sure external signing process works with Sui ecrecover.
     /// Samples for this test are generated with the `presets/` application.
     fun test_ecrecover() {
+        // TODO: regenerate this test with the raw message instead of the hashed message. 
         let message = x"c4f4633cf1b47f37d4f6ccf0a2aea7123d3c9a08d82d353ea5140419ba8935a8";
         let signature = x"ef006f7a189e9ac42c5c2d4251917b333c09099d04aaffc56781e07856eb491f39a50a890351b8d554c0cbf68d936b7acbd1f8214ea8b2f5b901a99b56e4915c00";
 
         normalize_signature(&mut signature);
 
-        let pub_key = ecdsa::ecrecover(&signature, &message);
+        let pub_key = ecdsa_k1::secp256k1_ecrecover(&signature, &message, ecdsa_k1::KECCAK256);
 
         assert!(pub_key == SIGNER, 0);
     }
@@ -433,7 +434,7 @@ module axelar::messenger {
         let signature = x"ef006f7a189e9ac42c5c2d4251917b333c09099d04aaffc56781e07856eb491f39a50a890351b8d554c0cbf68d936b7acbd1f8214ea8b2f5b901a99b56e4915c00";
         normalize_signature(&mut signature);
 
-        let pub_key = ecdsa::ecrecover(&signature, &ecdsa::keccak256(&to_signed(message)));
+        let pub_key = ecdsa_k1::secp256k1_ecrecover(&signature, &to_signed(message), ecdsa_k1::KECCAK256);
 
         let _ = pub_key;
         // std::debug::print(&ecdsa::keccak256(&to_signed(message)));
